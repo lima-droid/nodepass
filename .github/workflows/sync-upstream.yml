@@ -1,0 +1,183 @@
+name: Sync upstream & build release
+
+# 自动跟随上游 NodePassProject/nodepass：
+#   1) 把 main 重置到 upstream/main，只把「安装/下载链接」改成 lima-droid 指向；
+#   2) 上游有新版本时，用本地 .goreleaser.yml 编译并发布到本仓库 Releases；
+#   3) 同时构建多架构 Docker 镜像推到 ghcr.io/lima-droid/nodepass。
+on:
+  schedule:
+    - cron: "25 3 * * *" # 每天 03:25 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略“该版本已发布”，强制重新构建当前上游版本"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: NodePassProject/nodepass
+  SELF_REPO: lima-droid/nodepass
+  GHCR_IMAGE: ghcr.io/lima-droid/nodepass
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  sync:
+    if: github.repository == 'lima-droid/nodepass'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      need_release: ${{ steps.plan.outputs.need_release }}
+      changed: ${{ steps.commit.outputs.changed }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+
+      - name: Fetch upstream
+        run: |
+          git fetch --no-tags upstream main
+          git fetch --tags --force upstream
+
+      - name: Reset to upstream and re-apply install links
+        id: commit
+        run: |
+          set -euo pipefail
+          PREV=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse --short upstream/main)
+          echo "upstream/main -> ${UPSTREAM_SHA}"
+
+          git reset --hard upstream/main
+          # 上游没有本仓库的自动化文件，重置后从原 main 恢复
+          git checkout "${PREV}" -- .github/workflows/sync-upstream.yml .github/scripts
+          bash .github/scripts/point-links-to-fork.sh
+
+          git add -A
+          NEW_TREE=$(git write-tree)
+          PREV_TREE=$(git rev-parse "${PREV}^{tree}")
+          if [ "${NEW_TREE}" = "${PREV_TREE}" ]; then
+            echo "上游无变化，main 保持不动"
+            git reset --hard "${PREV}"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "chore: sync upstream ${UPSTREAM_SHA} and point install links to ${SELF_REPO}"
+            git push --force-with-lease origin main
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan release
+        id: plan
+        run: |
+          set -euo pipefail
+          TAG=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "上游最新正式版本: ${TAG}"
+          if [ "${{ inputs.force }}" = "true" ]; then
+            echo "need_release=true" >> "$GITHUB_OUTPUT"
+          elif gh release view "${TAG}" --repo "${SELF_REPO}" >/dev/null 2>&1; then
+            echo "本仓库已发布 ${TAG}，跳过编译"
+            echo "need_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "need_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: sync
+    if: needs.sync.outputs.need_release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git and fetch upstream tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --tags --force upstream
+
+      - name: Prepare source at ${{ needs.sync.outputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.sync.outputs.tag }}"
+          git checkout -B "release/${TAG}" "refs/tags/${TAG}"
+          git checkout origin/main -- .github/scripts
+          bash .github/scripts/point-links-to-fork.sh
+          git add -A
+          git commit -m "build: ${TAG} with fork install links" || true
+          git tag -f "${TAG}"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push release tag
+        run: git push --force origin "refs/tags/${{ needs.sync.outputs.tag }}"
+
+  docker:
+    needs: [sync, release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.sync.outputs.tag }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.GHCR_IMAGE }}:latest
+            ${{ env.GHCR_IMAGE }}:${{ needs.sync.outputs.tag }}
+          build-args: VERSION=${{ needs.sync.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
