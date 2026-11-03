@@ -2,7 +2,7 @@
   <img src="https://nodepass.eu/assets/np-gopher.png" width="300">
 
 [![Mentioned in Awesome Go](https://awesome.re/mentioned-badge.svg)](https://github.com/avelino/awesome-go#networking)
-[![GitHub release](https://img.shields.io/github/v/release/NodePassProject/nodepass)](https://github.com/NodePassProject/nodepass/releases)
+[![GitHub release](https://img.shields.io/github/v/release/NodePassProject/nodepass)](https://github.com/lima-droid/nodepass/releases)
 [![License](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
 [![Go Reference](https://pkg.go.dev/badge/github.com/NodePassProject/nodepass.svg)](https://pkg.go.dev/github.com/NodePassProject/nodepass)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/NodePassProject/nodepass)
