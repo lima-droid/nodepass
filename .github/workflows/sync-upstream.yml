@@ -126,6 +126,15 @@ jobs:
           git commit -m "build: ${TAG} with fork install links" || true
           git tag -f "${TAG}"
 
+      - name: Drop existing release when force-rebuilding
+        if: inputs.force
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.sync.outputs.tag }}"
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete "${TAG}" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag=false
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
