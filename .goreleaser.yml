@@ -20,5 +20,5 @@ builds:
 archives:
   - formats: [tar.gz]
 release:
-  prerelease: true
+  prerelease: false
   mode: replace

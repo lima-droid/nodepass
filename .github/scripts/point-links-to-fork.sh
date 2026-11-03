@@ -60,5 +60,11 @@ MAP="$MAP" perl -pi -e '
   for my $k (@KEYS) { s/\Q$k\E/$R{$k}/g }
 ' "${FILES[@]}"
 
+# 上游 .goreleaser.yml 把 nodepass 配成 prerelease: true，
+# 会让发布的版本全部显示为「预发行版」，这里统一改成正式发布。
+if [ -f .goreleaser.yml ]; then
+  sed -i -E 's/^([[:space:]]*)prerelease:[[:space:]]*true[[:space:]]*$/\1prerelease: false/' .goreleaser.yml
+fi
+
 echo "链接重写完成，改动文件："
 git diff --stat || true
